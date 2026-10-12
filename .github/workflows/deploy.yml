@@ -6,7 +6,7 @@ concurrency:
 
 on:
   schedule:
-    # 每天北京时间 09:00（GitHub Actions 使用 UTC，因此是 01:00）
+    # 每天北京时间 09:00 触发，任务随机等待后在 09:00-11:00 之间开始阅读
     - cron: '0 1 * * *'
   workflow_dispatch:
 
@@ -16,8 +16,28 @@ permissions:
   actions: write
 
 jobs:
+  random-start:
+    name: 随机等待至 09:00-11:00 开始
+    runs-on: ubuntu-latest
+    timeout-minutes: 130
+    outputs:
+      delay: ${{ steps.wait.outputs.delay }}
+    steps:
+      - name: Randomize scheduled start time
+        id: wait
+        run: |
+          delay=$(shuf -i 0-7200 -n 1)
+          echo "delay=${delay}" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "Scheduled run will wait ${delay} seconds before reading."
+            sleep "${delay}"
+          else
+            echo "Manual run: skip randomized wait."
+          fi
+
   deploy:
     name: 每日自动阅读（第 1 段，3 小时）
+    needs: random-start
     runs-on: ubuntu-22.04
     # GitHub Actions 单个 job 最长 6 小时；拆成两段以完整执行 6 小时阅读。
     timeout-minutes: 230
