@@ -17,9 +17,10 @@ permissions:
 
 jobs:
   deploy:
-    name: 每日自动阅读（4 小时）
+    name: 每日自动阅读（第 1 段，3 小时）
     runs-on: ubuntu-22.04
-    timeout-minutes: 290
+    # GitHub Actions 单个 job 最长 6 小时；拆成两段以完整执行 6 小时阅读。
+    timeout-minutes: 230
     environment: AutoRead
 
     steps:
@@ -41,7 +42,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3
 
-      - name: Run four-hour reading task
+      - name: Run first three-hour reading task
         id: read
         env:
           TZ: Asia/Shanghai
@@ -52,7 +53,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SERVERCHAN_SPT: ${{ secrets.SERVERCHAN_SPT }}
-          READ_NUM: ${{ vars.READ_NUM || '480' }}
+          # 总次数（720）分为两个 job，每段 360 次，即约 3 小时。
+          READ_NUM: ${{ fromJSON(vars.READ_NUM || '720') / 2 }}
         run: |
           set -o pipefail
           python main.py 2>&1 | tee wxread.log
@@ -101,10 +103,96 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  deploy-part-2:
+    name: 每日自动阅读（第 2 段，3 小时）
+    needs: deploy
+    runs-on: ubuntu-22.04
+    timeout-minutes: 230
+    environment: AutoRead
+
+    steps:
+      - name: Set DNS to Google's DNS
+        run: |
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf
+          echo "nameserver 8.8.4.4" | sudo tee -a /etc/resolv.conf
+
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install certifi==2024.8.30 charset-normalizer==3.4.0 idna==3.10 requests==2.32.3 urllib3==2.2.3
+
+      - name: Run second three-hour reading task
+        id: read
+        env:
+          TZ: Asia/Shanghai
+          WXREAD_CURL_BASH: ${{ secrets.WXREAD_CURL_BASH }}
+          PUSH_METHOD: ${{ secrets.PUSH_METHOD }}
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          WXPUSHER_SPT: ${{ secrets.WXPUSHER_SPT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SERVERCHAN_SPT: ${{ secrets.SERVERCHAN_SPT }}
+          READ_NUM: ${{ fromJSON(vars.READ_NUM || '720') / 2 }}
+        run: |
+          set -o pipefail
+          python main.py 2>&1 | tee wxread.log
+
+      - name: Prompt for manual login when the session expires
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo '## 微信读书需要手动登录或更新凭据'
+            echo
+            echo '本次自动阅读未完成。请先在微信读书网页版手动登录，然后重新抓取 read 请求的 cURL（bash），更新仓库 Secret `WXREAD_CURL_BASH`，再重新运行此工作流。'
+            echo
+            echo "运行记录：${RUN_URL}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          issue_title='微信读书自动阅读需要手动登录'
+          issue_body=$(cat <<EOF
+          自动阅读工作流失败，可能需要手动登录或更新微信读书凭据。
+
+          操作步骤：
+          1. 打开 https://weread.qq.com/ 并手动登录。
+          2. 在浏览器开发者工具 Network 中找到 `/web/book/read` 请求，选择 Copy as cURL (bash)。
+          3. 在本仓库的 Settings → Secrets and variables → Actions 中更新 `WXREAD_CURL_BASH`。
+          4. 返回 Actions 页面重新运行工作流。
+
+          失败运行：${RUN_URL}
+          EOF
+          )
+
+          issue_number=$(gh issue list --state open --search "$issue_title in:title" --json number --jq '.[0].number' --limit 1 || true)
+          if [ -n "$issue_number" ]; then
+            gh issue comment "$issue_number" --body "$issue_body" || true
+          else
+            gh issue create --title "$issue_title" --body "$issue_body" || true
+          fi
+
+      - name: Upload reading log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wxread-log-part-2-${{ github.run_id }}
+          path: wxread.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   keepalive-job:
     name: Keepalive Workflow
     if: ${{ always() }}
-    needs: deploy
+    needs: [deploy, deploy-part-2]
     runs-on: ubuntu-latest
     permissions:
       actions: write
