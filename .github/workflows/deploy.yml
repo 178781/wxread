@@ -6,8 +6,8 @@ concurrency:
 
 on:
   schedule:
-    # 每天北京时间 18:00（GitHub Actions 使用 UTC，因此是 10:00）
-    - cron: '0 10 * * *'
+    # 每天北京时间 09:00（GitHub Actions 使用 UTC，因此是 01:00）
+    - cron: '0 1 * * *'
   workflow_dispatch:
 
 permissions:
